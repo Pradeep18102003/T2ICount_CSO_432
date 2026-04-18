@@ -13,7 +13,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 from utils.ssim_loss import cal_avg_ms_ssim
 from utils.tools import extract_patches, reassemble_patches
-
+from torch.cuda.amp import autocast, GradScaler
 
 def setup_seed(seed):
     torch.manual_seed(seed)
@@ -43,10 +43,11 @@ class Reg_Trainer(Trainer):
             self.device = torch.device('cuda')
             torch.cuda.set_device(torch.cuda.current_device())
             self.device_count = torch.cuda.device_count()
-            assert self.device_count == 1
             logging.info('Using {} gpus'.format(self.device_count))
         else:
-            raise Exception('GPU is not available')
+            self.device = torch.device('cpu')
+            self.device_count = 1
+            logging.info('Using CPU')
 
         self.d_ratio = args.downsample_ratio
 
@@ -79,8 +80,9 @@ class Reg_Trainer(Trainer):
             {'params': self.model.decoder.parameters(),
              'lr': args.lr,
              'weight_decay': args.weight_decay}])
-
-        self.start_epoch = 0
+        
+        self.start_epoch = 0    
+        self.scaler = GradScaler()
 
         if args.resume:
             suf = args.resume.rsplit('.', 1)[-1]

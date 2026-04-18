@@ -97,7 +97,7 @@ class Decoder(nn.Module):
         feat, fused_text = self.upsample1(x[3], x[2], text_feat)
         sim_x2 = F.cosine_similarity(self.up(self.up(feat)), fused_text.unsqueeze(2).unsqueeze(3), dim=1).unsqueeze(1)
         feat, fused_text = self.upsample2(feat, x[1], text_feat,
-                                          simi_map=F.interpolate(sim_x2, (24, 24), mode='bilinear', align_corners=False))
+                                          simi_map=F.interpolate(sim_x2, x[1].shape[-2:], mode='bilinear', align_corners=False))
         sim_x1 = F.cosine_similarity(self.up(feat), fused_text.unsqueeze(2).unsqueeze(3), dim=1).unsqueeze(1)
         feat = self.upsample3(feat, x[0], simi_map=sim_x1)
         den = self.regressor(feat)
