@@ -1,12 +1,25 @@
 import torch
 import torch.nn as nn
 from functools import partial
+import os
+from pathlib import Path
 import clip
-from einops import rearrange, repeat
-from transformers import CLIPTokenizer, CLIPTextModel
+from einops import repeat
+from transformers import CLIPTokenizer, CLIPTextModel, CLIPTextConfig
 import kornia
 
 from ldm.modules.x_transformer import Encoder, TransformerWrapper  # TODO: can we directly rely on lucidrains code and simply add this as a reuirement? --> test
+
+
+def _clip_local_candidate_dirs():
+    project_root = Path(__file__).resolve().parents[3]
+    candidates = [
+        os.environ.get("T2ICOUNT_CLIP_PATH"),
+        str(project_root / "models" / "clip-vit-large-patch14"),
+        str(project_root / "models" / "clip-tokenizer"),
+        str(project_root / "models" / "clip"),
+    ]
+    return [p for p in candidates if p and Path(p).exists()]
 
 
 class AbstractEncoder(nn.Module):
@@ -138,11 +151,64 @@ class FrozenCLIPEmbedder(AbstractEncoder):
     """Uses the CLIP transformer encoder for text (from Hugging Face)"""
     def __init__(self, version="openai/clip-vit-large-patch14", device="cuda", max_length=77):
         super().__init__()
-        self.tokenizer = CLIPTokenizer.from_pretrained(version)
-        self.transformer = CLIPTextModel.from_pretrained(version)
+        self.tokenizer = self._load_tokenizer(version)
+        self.transformer = self._load_text_model(version)
         self.device = device
         self.max_length = max_length
         self.freeze()
+
+    @staticmethod
+    def _load_tokenizer(version):
+        try:
+            return CLIPTokenizer.from_pretrained(version)
+        except Exception:
+            pass
+
+        for local_dir in _clip_local_candidate_dirs():
+            try:
+                print(f"[FrozenCLIPEmbedder] Falling back to local tokenizer: {local_dir}")
+                return CLIPTokenizer.from_pretrained(local_dir, local_files_only=True)
+            except Exception:
+                continue
+
+        raise OSError(
+            "Unable to load CLIP tokenizer. Tried HuggingFace id "
+            f"'{version}' and local directories {_clip_local_candidate_dirs()}. "
+            "Set T2ICOUNT_CLIP_PATH to a local folder containing tokenizer files if offline."
+        )
+
+    @staticmethod
+    def _load_text_model(version):
+        try:
+            return CLIPTextModel.from_pretrained(version)
+        except Exception:
+            pass
+
+        for local_dir in _clip_local_candidate_dirs():
+            try:
+                print(f"[FrozenCLIPEmbedder] Falling back to local text model: {local_dir}")
+                return CLIPTextModel.from_pretrained(local_dir, local_files_only=True)
+            except Exception:
+                continue
+
+        # Fallback to config-only init (weights are expected to be restored from checkpoint load_state_dict).
+        print("[FrozenCLIPEmbedder] Could not download/load CLIPTextModel; initializing from default SD-compatible CLIP text config.")
+        text_cfg = CLIPTextConfig(
+            vocab_size=49408,
+            hidden_size=768,
+            intermediate_size=3072,
+            projection_dim=768,
+            num_hidden_layers=12,
+            num_attention_heads=12,
+            max_position_embeddings=77,
+            hidden_act="quick_gelu",
+            layer_norm_eps=1e-5,
+            attention_dropout=0.0,
+            pad_token_id=1,
+            bos_token_id=49406,
+            eos_token_id=49407,
+        )
+        return CLIPTextModel(text_cfg)
 
     def freeze(self):
         self.transformer = self.transformer.eval()

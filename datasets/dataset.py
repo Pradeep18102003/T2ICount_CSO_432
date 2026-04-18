@@ -1,9 +1,8 @@
 import torch
 from torch.utils.data import Dataset
-from glob import glob
 import os
+from pathlib import Path
 import numpy as np
-import h5py
 import torchvision.transforms.functional as F
 import random
 from PIL import Image
@@ -11,6 +10,31 @@ from torchvision import transforms
 import cv2
 import json
 from transformers import CLIPTokenizer
+
+
+def _load_clip_tokenizer(version="openai/clip-vit-large-patch14"):
+    candidates = [
+        os.environ.get("T2ICOUNT_CLIP_PATH"),
+        str(Path(__file__).resolve().parents[1] / "models" / "clip-tokenizer"),
+        str(Path(__file__).resolve().parents[1] / "models" / "clip-vit-large-patch14"),
+    ]
+
+    try:
+        return CLIPTokenizer.from_pretrained(version)
+    except Exception:
+        pass
+
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            try:
+                return CLIPTokenizer.from_pretrained(candidate, local_files_only=True)
+            except Exception:
+                continue
+
+    raise OSError(
+        "Unable to load CLIP tokenizer from HuggingFace or local fallback paths. "
+        f"Tried: {candidates}."
+    )
 
 
 def random_crop(im_h, im_w, crop_h, crop_w):
@@ -34,7 +58,7 @@ class ObjectCount(Dataset):
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
         ])
-        self.tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+        self.tokenizer = _load_clip_tokenizer()
         self.concat_size = concat_size
 
         with open(os.path.join(root, 'FSC_147/Train_Test_Val_FSC_147.json'), 'r') as f:
