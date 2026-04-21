@@ -6,10 +6,9 @@ from models.diff_unet import UNetWrapper
 import torch.nn.functional as F
 from models.decoder import Upsample, Regressor
 
-
 def load_model_from_config(config, ckpt, verbose=False):
     print(f"Loading model from {ckpt}")
-    pl_sd = torch.load(ckpt, map_location="cpu")
+    pl_sd = torch.load(ckpt, map_location="cpu", weights_only=False)
     sd = pl_sd["state_dict"]
     model = instantiate_from_config(config.model)
     m, u = model.load_state_dict(sd, strict=False)
@@ -114,4 +113,3 @@ def minmax_norm(x):
     x_normalized = (x - x_min) / denominator
     x_normalized = x_normalized.reshape(B, C, H, W)
     return x_normalized
-
