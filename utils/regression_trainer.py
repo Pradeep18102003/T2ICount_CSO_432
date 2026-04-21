@@ -122,7 +122,7 @@ class Reg_Trainer(Trainer):
             gt_prompt_attn_mask = prompt_attn_mask.to(self.device).unsqueeze(2).unsqueeze(3)
             gt_img_attn_mask = img_attn_mask.to(self.device)
             self.model.set_train()
-            with torch.set_grad_enabled(True):
+            with torch.set_grad_enabled(True), autocast():
                 N = inputs.shape[0]
                 pred_den, sim_x2, sim_x1, fused_cross_attn = self.model(inputs, caption, gt_prompt_attn_mask)
                 fused_cross_attn_ = fused_cross_attn * gt_img_attn_mask
@@ -144,8 +144,9 @@ class Reg_Trainer(Trainer):
                 epoch_mse.update(np.mean(diff * diff), N)
 
                 self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
+                self.scaler.scale(loss).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
 
         logging.info(
             'Epoch {} Train, reg:{:.4f}, RRC_stage1:{:.4f}, RRC_stage2:{:.4f}, mae:{:.2f}, mse:{:.2f}, Cost: {:.1f} sec '
@@ -237,6 +238,7 @@ def get_normalized_map(density_map):
     return mu_normed
 
 
+"""
 def get_reg_loss(pred, gt, threshold, level=3, window_size=3):
     mask = gt > threshold
     loss_ssim = cal_avg_ms_ssim(pred * mask, gt * mask, level=level,
@@ -253,5 +255,40 @@ def RRC_loss(simi, ambiguous_negative_map, positive_map):
 
     pos_num = positive_map.flatten(1).sum(dim=1)
     neg_num = ((ambiguous_negative_map == 0) * (positive_map == 0)).flatten(1).sum(dim=1)
+    loss = 2 * pos.flatten(1).sum(dim=1) / (pos_num + 1e-7) + neg.flatten(1).sum(dim=1) / (neg_num + 1e-7)
+    return loss.mean()
+"""
+def get_reg_loss(pred, gt, threshold, level=3, window_size=3):
+    # Paper 3.1: Sigmoid-Based Soft-Margin Loss
+    # Replaces rigid threshold mask with a smooth Sigmoid function
+    mask = torch.sigmoid((gt / threshold) - 1.0)
+    
+    loss_ssim = cal_avg_ms_ssim(pred * mask, gt * mask, level=level,
+                                window_size=window_size)
+    mu_normed = get_normalized_map(pred)
+    gt_mu_normed = get_normalized_map(gt)
+    
+    # Paper 3.2: MSE Loss (L2 Regularization in place of L1)
+    tv_loss = (nn.MSELoss(reduction='none')(mu_normed, gt_mu_normed).sum(1).sum(1).sum(1)).mean(0)
+    
+    return loss_ssim + 0.1 * tv_loss
+
+
+def RRC_loss(simi, ambiguous_negative_map, positive_map, alpha=1.0):
+    # Convert boolean masks to floats to avoid PyTorch 2.6 errors
+    pos_mask = positive_map.float()
+    neg_mask = (~ambiguous_negative_map.bool()) & (~positive_map.bool())
+    
+    pos = (1.0 - simi) * pos_mask
+    
+    # Paper 3.3: Contrastive clamping loss with quadratic penalty
+    clamped_simi = torch.clamp(simi, min=0.0)
+    neg_contrastive = clamped_simi + alpha * (clamped_simi ** 2)
+    
+    neg = neg_contrastive * neg_mask.float()
+
+    pos_num = pos_mask.flatten(1).sum(dim=1)
+    neg_num = neg_mask.float().flatten(1).sum(dim=1)
+    
     loss = 2 * pos.flatten(1).sum(dim=1) / (pos_num + 1e-7) + neg.flatten(1).sum(dim=1) / (neg_num + 1e-7)
     return loss.mean()
