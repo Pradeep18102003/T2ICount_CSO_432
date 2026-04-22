@@ -319,27 +319,43 @@ def RRC_loss(simi, ambiguous_negative_map, positive_map):
     return loss.mean()
 """
 def get_reg_loss(pred, gt, threshold, level=3, window_size=3):
-    # Stable objective: structural + normalized map alignment + count consistency.
-    mask = gt > threshold
+    # Section 3.1: Sigmoid-Based Soft-Margin Loss
+    # Replaces the strict (gt > threshold) with the Sigmoid formulation (Equation 2)
+    # Assuming tau (scaling factor) is the threshold parameter
+    mask = torch.sigmoid((gt / threshold) - 1.0)
+    
     loss_ssim = cal_avg_ms_ssim(pred * mask, gt * mask, level=level,
                                 window_size=window_size)
 
     mu_normed = get_normalized_map(pred)
     gt_mu_normed = get_normalized_map(gt)
-    tv_loss = (nn.L1Loss(reduction='none')(mu_normed, gt_mu_normed).sum(1).sum(1).sum(1)).mean(0)
+    
+    # Section 3.2: MSE Loss (L2 Regularization)
+    # Replaced nn.L1Loss with nn.MSELoss (Equation 4)
+    tv_loss = (nn.MSELoss(reduction='none')(mu_normed, gt_mu_normed).sum(1).sum(1).sum(1)).mean(0)
 
     pred_count = pred.flatten(1).sum(dim=1)
     gt_count = gt.flatten(1).sum(dim=1)
-    count_loss = nn.L1Loss()(pred_count, gt_count)
+    
+    # Also replaced L1 with MSE for the count_loss to be consistent with Section 3.2
+    count_loss = nn.MSELoss()(pred_count, gt_count)
 
     return loss_ssim + 0.1 * tv_loss + 0.01 * count_loss
 
 
-def RRC_loss(simi, ambiguous_negative_map, positive_map):
+def RRC_loss(simi, ambiguous_negative_map, positive_map, alpha=1.0):
     pos = (1 - simi) * positive_map.float()
-    neg = torch.clamp(simi, min=0) * (ambiguous_negative_map == 0).float() * (positive_map == 0).float()
+    
+    # Section 3.3: Contrastive loss in LRRC (Equation 5)
+    # Adding the quadratic penalty term: max(0, simi) + alpha * [max(0, simi)]^2
+    clamped_simi = torch.clamp(simi, min=0.0)
+    contrastive_penalty = clamped_simi + alpha * (clamped_simi ** 2)
+    
+    neg = contrastive_penalty * (ambiguous_negative_map == 0).float() * (positive_map == 0).float()
 
     pos_num = positive_map.float().flatten(1).sum(dim=1)
     neg_num = ((ambiguous_negative_map == 0) * (positive_map == 0)).float().flatten(1).sum(dim=1)
+    
     loss = 2 * pos.flatten(1).sum(dim=1) / (pos_num + 1e-7) + neg.flatten(1).sum(dim=1) / (neg_num + 1e-7)
+    
     return loss.mean()
