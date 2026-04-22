@@ -167,6 +167,7 @@ class Reg_Trainer(Trainer):
         epoch_start = time.time()
         self.model.set_eval()
         epoch_res = []
+        skipped_samples = 0
         for inputs, gt_counts, captions, prompt_attn_mask, name in self.dataloaders['val']:
             inputs = inputs.to(self.device)
             gt_attn_mask = prompt_attn_mask.to(self.device).unsqueeze(2).unsqueeze(3)
@@ -182,15 +183,30 @@ class Reg_Trainer(Trainer):
                     outputs.append(outputs_partial)
                 results = reassemble_patches(torch.cat(outputs, dim=0), num_h, num_w, inputs.size(2), inputs.size(3),
                                              patch_size=self.args.crop_size, stride=self.args.stride)
+                if not torch.isfinite(results).all():
+                    skipped_samples += 1
+                    logging.warning(f"Val sample {name[0]} produced non-finite density map. Skipping this sample.")
+                    continue
                 res = gt_counts[0].item() - torch.sum(results).item() / 60
+                if not np.isfinite(res):
+                    skipped_samples += 1
+                    logging.warning(f"Val sample {name[0]} produced non-finite residual {res}. Skipping this sample.")
+                    continue
                 epoch_res.append(res)
 
-        epoch_res = np.array(epoch_res)
-        mse = np.sqrt(np.mean(np.square(epoch_res)))
-        mae = np.mean(np.abs(epoch_res))
+        if len(epoch_res) == 0:
+            logging.warning("All validation samples were non-finite after reassembly. Check stride/crop_size and loss stability.")
+            mae = np.nan
+            mse = np.nan
+        else:
+            epoch_res = np.array(epoch_res)
+            mse = np.sqrt(np.mean(np.square(epoch_res)))
+            mae = np.mean(np.abs(epoch_res))
 
         logging.info('Epoch {} Val, MAE: {:.2f}, MSE: {:.2f} Cost {:.1f} sec'
                      .format(self.epoch, mae, mse, (time.time() - epoch_start)))
+        if skipped_samples > 0:
+            logging.info(f"Validation skipped {skipped_samples} samples due to non-finite predictions.")
 
         model_state_dict = self.model.state_dict()
 
@@ -206,6 +222,7 @@ class Reg_Trainer(Trainer):
         epoch_start = time.time()
         self.model.set_eval()
         epoch_res = []
+        skipped_samples = 0
         for inputs, gt_counts, captions, prompt_attn_mask, name in self.dataloaders['test']:
             inputs = inputs.to(self.device)
             gt_attn_mask = prompt_attn_mask.to(self.device).unsqueeze(2).unsqueeze(3)
@@ -221,15 +238,30 @@ class Reg_Trainer(Trainer):
                     outputs.append(outputs_partial)
                 results = reassemble_patches(torch.cat(outputs, dim=0), num_h, num_w, inputs.size(2), inputs.size(3),
                                              patch_size=self.args.crop_size, stride=self.args.stride)
+                if not torch.isfinite(results).all():
+                    skipped_samples += 1
+                    logging.warning(f"Test sample {name[0]} produced non-finite density map. Skipping this sample.")
+                    continue
                 res = gt_counts[0].item() - torch.sum(results).item() / 60
+                if not np.isfinite(res):
+                    skipped_samples += 1
+                    logging.warning(f"Test sample {name[0]} produced non-finite residual {res}. Skipping this sample.")
+                    continue
                 epoch_res.append(res)
 
-        epoch_res = np.array(epoch_res)
-        mse = np.sqrt(np.mean(np.square(epoch_res)))
-        mae = np.mean(np.abs(epoch_res))
+        if len(epoch_res) == 0:
+            logging.warning("All test samples were non-finite after reassembly. Check stride/crop_size and loss stability.")
+            mae = np.nan
+            mse = np.nan
+        else:
+            epoch_res = np.array(epoch_res)
+            mse = np.sqrt(np.mean(np.square(epoch_res)))
+            mae = np.mean(np.abs(epoch_res))
 
         logging.info('Epoch {} Test, MAE: {:.2f}, MSE: {:.2f} Cost {:.1f} sec'
                      .format(self.epoch, mae, mse, (time.time() - epoch_start)))
+        if skipped_samples > 0:
+            logging.info(f"Test skipped {skipped_samples} samples due to non-finite predictions.")
 
 def get_normalized_map(density_map):
     B, C, H, W = density_map.size()
