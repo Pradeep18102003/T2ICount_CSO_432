@@ -185,6 +185,7 @@ class Reg_Trainer(Trainer):
         self.model.set_eval()
         epoch_res = []
         skipped_samples = 0
+        pred_counts_epoch = []
         for inputs, gt_counts, captions, prompt_attn_mask, name in self.dataloaders['val']:
             inputs = inputs.to(self.device)
             gt_attn_mask = prompt_attn_mask.to(self.device).unsqueeze(2).unsqueeze(3)
@@ -204,11 +205,13 @@ class Reg_Trainer(Trainer):
                     skipped_samples += 1
                     logging.warning(f"Val sample {name[0]} produced non-finite density map. Skipping this sample.")
                     continue
+                pred_count = torch.sum(results).item() / 60
                 res = gt_counts[0].item() - torch.sum(results).item() / 60
                 if not np.isfinite(res):
                     skipped_samples += 1
                     logging.warning(f"Val sample {name[0]} produced non-finite residual {res}. Skipping this sample.")
                     continue
+                pred_counts_epoch.append(pred_count)
                 epoch_res.append(res)
 
         if len(epoch_res) == 0:
@@ -222,6 +225,8 @@ class Reg_Trainer(Trainer):
 
         logging.info('Epoch {} Val, MAE: {:.2f}, MSE: {:.2f} Cost {:.1f} sec'
                      .format(self.epoch, mae, mse, (time.time() - epoch_start)))
+        if len(pred_counts_epoch) > 0:
+            logging.info('Epoch {} Val, avg_pred_count: {:.2f}'.format(self.epoch, float(np.mean(pred_counts_epoch))))
         if skipped_samples > 0:
             logging.info(f"Validation skipped {skipped_samples} samples due to non-finite predictions.")
 
@@ -240,6 +245,7 @@ class Reg_Trainer(Trainer):
         self.model.set_eval()
         epoch_res = []
         skipped_samples = 0
+        pred_counts_epoch = []
         for inputs, gt_counts, captions, prompt_attn_mask, name in self.dataloaders['test']:
             inputs = inputs.to(self.device)
             gt_attn_mask = prompt_attn_mask.to(self.device).unsqueeze(2).unsqueeze(3)
@@ -259,11 +265,13 @@ class Reg_Trainer(Trainer):
                     skipped_samples += 1
                     logging.warning(f"Test sample {name[0]} produced non-finite density map. Skipping this sample.")
                     continue
+                pred_count = torch.sum(results).item() / 60
                 res = gt_counts[0].item() - torch.sum(results).item() / 60
                 if not np.isfinite(res):
                     skipped_samples += 1
                     logging.warning(f"Test sample {name[0]} produced non-finite residual {res}. Skipping this sample.")
                     continue
+                pred_counts_epoch.append(pred_count)
                 epoch_res.append(res)
 
         if len(epoch_res) == 0:
@@ -277,13 +285,16 @@ class Reg_Trainer(Trainer):
 
         logging.info('Epoch {} Test, MAE: {:.2f}, MSE: {:.2f} Cost {:.1f} sec'
                      .format(self.epoch, mae, mse, (time.time() - epoch_start)))
+        if len(pred_counts_epoch) > 0:
+            logging.info('Epoch {} Test, avg_pred_count: {:.2f}'.format(self.epoch, float(np.mean(pred_counts_epoch))))
         if skipped_samples > 0:
             logging.info(f"Test skipped {skipped_samples} samples due to non-finite predictions.")
 
 def get_normalized_map(density_map):
     B, C, H, W = density_map.size()
+    density_map = torch.clamp(density_map, min=0.0)
     mu_sum = density_map.view([B, -1]).sum(1).unsqueeze(1).unsqueeze(2).unsqueeze(3)
-    mu_normed = density_map / (mu_sum + 1e-6)
+    mu_normed = density_map / torch.clamp(mu_sum, min=1e-6)
     return mu_normed
 
 
@@ -308,36 +319,27 @@ def RRC_loss(simi, ambiguous_negative_map, positive_map):
     return loss.mean()
 """
 def get_reg_loss(pred, gt, threshold, level=3, window_size=3):
-    # Paper 3.1: Sigmoid-Based Soft-Margin Loss
-    # Replaces rigid threshold mask with a smooth Sigmoid function
-    mask = torch.sigmoid((gt / threshold) - 1.0)
-    
+    # Stable objective: structural + normalized map alignment + count consistency.
+    mask = gt > threshold
     loss_ssim = cal_avg_ms_ssim(pred * mask, gt * mask, level=level,
                                 window_size=window_size)
+
     mu_normed = get_normalized_map(pred)
     gt_mu_normed = get_normalized_map(gt)
-    
-    # Paper 3.2: MSE Loss (L2 Regularization in place of L1)
-    tv_loss = (nn.MSELoss(reduction='none')(mu_normed, gt_mu_normed).sum(1).sum(1).sum(1)).mean(0)
-    
-    return loss_ssim + 0.1 * tv_loss
+    tv_loss = (nn.L1Loss(reduction='none')(mu_normed, gt_mu_normed).sum(1).sum(1).sum(1)).mean(0)
+
+    pred_count = pred.flatten(1).sum(dim=1)
+    gt_count = gt.flatten(1).sum(dim=1)
+    count_loss = nn.L1Loss()(pred_count, gt_count)
+
+    return loss_ssim + 0.1 * tv_loss + 0.01 * count_loss
 
 
-def RRC_loss(simi, ambiguous_negative_map, positive_map, alpha=1.0):
-    # Convert boolean masks to floats to avoid PyTorch 2.6 errors
-    pos_mask = positive_map.float()
-    neg_mask = (~ambiguous_negative_map.bool()) & (~positive_map.bool())
-    
-    pos = (1.0 - simi) * pos_mask
-    
-    # Paper 3.3: Contrastive clamping loss with quadratic penalty
-    clamped_simi = torch.clamp(simi, min=0.0)
-    neg_contrastive = clamped_simi + alpha * (clamped_simi ** 2)
-    
-    neg = neg_contrastive * neg_mask.float()
+def RRC_loss(simi, ambiguous_negative_map, positive_map):
+    pos = (1 - simi) * positive_map.float()
+    neg = torch.clamp(simi, min=0) * (ambiguous_negative_map == 0).float() * (positive_map == 0).float()
 
-    pos_num = pos_mask.flatten(1).sum(dim=1)
-    neg_num = neg_mask.float().flatten(1).sum(dim=1)
-    
+    pos_num = positive_map.float().flatten(1).sum(dim=1)
+    neg_num = ((ambiguous_negative_map == 0) * (positive_map == 0)).float().flatten(1).sum(dim=1)
     loss = 2 * pos.flatten(1).sum(dim=1) / (pos_num + 1e-7) + neg.flatten(1).sum(dim=1) / (neg_num + 1e-7)
     return loss.mean()
