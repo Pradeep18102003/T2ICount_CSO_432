@@ -9,7 +9,7 @@ import numpy as np
 import os
 import time
 import random
-import torch.nn.functional as F
+import shutil
 import torch.nn as nn
 from utils.ssim_loss import cal_avg_ms_ssim
 from utils.tools import extract_patches, reassemble_patches
@@ -106,6 +106,23 @@ class Reg_Trainer(Trainer):
             self.train_epoch()
             if self.epoch >= args.start_val and self.epoch % self.args.val_epoch == 0:
                 self.val_epoch()
+        self.save_final_model()
+
+    def save_final_model(self):
+        final_name = getattr(self.args, 'final_model_name', 'final_model.pth')
+        final_model_path = os.path.join(self.save_dir, final_name)
+        torch.save(self.model.state_dict(), final_model_path)
+        logging.info(f"Saved final model to {final_model_path}")
+
+        # Kaggle-specific convenience: persist a copy in /kaggle/working for easy download.
+        kaggle_output_dir = '/kaggle/working'
+        if os.path.isdir(kaggle_output_dir):
+            kaggle_model_path = os.path.join(kaggle_output_dir, final_name)
+            try:
+                shutil.copy2(final_model_path, kaggle_model_path)
+                logging.info(f"Copied final model to Kaggle output: {kaggle_model_path}")
+            except Exception as e:
+                logging.warning(f"Could not copy final model to {kaggle_model_path}: {e}")
 
     def train_epoch(self):
         epoch_reg_loss = AverageMeter()

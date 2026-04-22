@@ -24,6 +24,8 @@ def parse_arg():
 
     parser.add_argument('--save-dir', default='history',
                         help='the directory for saving models and training logs')
+    parser.add_argument('--final-model-name', default='final_model.pth', type=str,
+                        help='filename used to save final model at end of training')
 
     parser.add_argument('--max-num', default=2, type=int,
                         help='the maximum number of saved models ')
