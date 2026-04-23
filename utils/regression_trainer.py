@@ -170,16 +170,6 @@ class Reg_Trainer(Trainer):
             .format(self.epoch, epoch_reg_loss.getAvg(), epoch_RRC1_loss.getAvg(), epoch_RRC2_loss.getAvg(), epoch_mae.getAvg(),
                     np.sqrt(epoch_mse.getAvg()), (time.time() - epoch_start)))
 
-        if self.epoch % 5 == 0:
-            model_state_dict = self.model.state_dict()
-            save_path = os.path.join(self.save_dir, "{}_ckpt.tar".format(self.epoch))
-            torch.save({
-                'epoch': self.epoch,
-                'optimizer_state_dict': self.optimizer.state_dict(),
-                'model_state_dict': model_state_dict,
-            }, save_path)
-            self.save_list.append(save_path)
-
     def val_epoch(self):
         epoch_start = time.time()
         self.model.set_eval()
@@ -230,13 +220,10 @@ class Reg_Trainer(Trainer):
         if skipped_samples > 0:
             logging.info(f"Validation skipped {skipped_samples} samples due to non-finite predictions.")
 
-        model_state_dict = self.model.state_dict()
-
         if (mae + mse) < (self.best_mae + self.best_mse):
             self.best_mae = mae
             self.best_mse = mse
-            torch.save(model_state_dict, os.path.join(self.save_dir, 'best_model_{}.pth'.format(self.epoch)))
-            logging.info("Save best model: MAE: {:.2f} MSE:{:.2f} model epoch {}".format(mae, mse, self.epoch))
+            logging.info("New best result: MAE: {:.2f} MSE:{:.2f} at epoch {}".format(mae, mse, self.epoch))
             self.test_epoch()
         print("Best Result: MAE: {:.2f} MSE:{:.2f}".format(self.best_mae, self.best_mse))
 
