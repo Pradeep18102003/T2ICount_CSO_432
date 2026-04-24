@@ -285,7 +285,7 @@ def get_normalized_map(density_map):
     return mu_normed
 
 
-"""
+
 def get_reg_loss(pred, gt, threshold, level=3, window_size=3):
     mask = gt > threshold
     loss_ssim = cal_avg_ms_ssim(pred * mask, gt * mask, level=level,
@@ -346,3 +346,4 @@ def RRC_loss(simi, ambiguous_negative_map, positive_map, alpha=1.0):
     loss = 2 * pos.flatten(1).sum(dim=1) / (pos_num + 1e-7) + neg.flatten(1).sum(dim=1) / (neg_num + 1e-7)
     
     return loss.mean()
+"""
